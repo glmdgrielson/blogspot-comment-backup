@@ -205,11 +205,17 @@ async def download_batch(worker_id, batch_id, batch_type, batch_content, random_
                     batch_file.end_blog()
                 # Other errors
                 elif blog_posts == "oe":
-                    print(f"Marking as exclusion: batch_id: {batch_id} | blog_name: {blog_name}")
-                    await submit_exclusion(worker_id, batch_id, random_key, blog_name, session)
-                    blog_domain = f"{blog_name}.blogspot.com"
-                    batch_file.start_blog(WORKER_VERSION, blog_name, blog_domain, "e", first_blog)
-                    batch_file.end_blog()
+                    if batch_type == "list":
+                        print(f"Marking as exclusion: batch_id: {batch_id} | blog_name: {blog_name}")
+                        await submit_exclusion(worker_id, batch_id, random_key, blog_name, session)
+                        blog_domain = f"{blog_name}.blogspot.com"
+                        batch_file.start_blog(WORKER_VERSION, blog_name, blog_domain, "e", first_blog)
+                        batch_file.end_blog()
+                    elif batch_type == "domain":
+                        print(f"Marking as investigate: batch_id: {batch_id} | blog_name: {blog_name}")
+                        blog_domain = f"{blog_name}.blogspot.com"
+                        batch_file.start_blog(WORKER_VERSION, blog_name, blog_domain, "__i", first_blog)
+                        batch_file.end_blog()
                 else:
                     blog_tld = tldextract.extract(blog_posts[0])
                     blog_domain = f"{blog_tld.domain}.{blog_tld.suffix}"
@@ -225,17 +231,22 @@ async def download_batch(worker_id, batch_id, batch_type, batch_content, random_
                     batch_file.end_blog()
 
             except MarkExclusion:
-                print(f"Marking as exclusion: batch_id: {batch_id} | blog_name: {blog_name}")
-                await submit_exclusion(worker_id, batch_id, random_key, blog_name, session)
-                blog_domain = f"{blog_name}.blogspot.com"
-                batch_file.start_blog(WORKER_VERSION, blog_name, blog_domain, "e", first_blog)
-                batch_file.end_blog()
+                if batch_type == "list":
+                    print(f"Marking as exclusion: batch_id: {batch_id} | blog_name: {blog_name}")
+                    await submit_exclusion(worker_id, batch_id, random_key, blog_name, session)
+                    blog_domain = f"{blog_name}.blogspot.com"
+                    batch_file.start_blog(WORKER_VERSION, blog_name, blog_domain, "e", first_blog)
+                    batch_file.end_blog()
+                elif batch_type == "domain":
+                    print(f"Marking as investigate: batch_id: {batch_id} | blog_name: {blog_name}")
+                    blog_domain = f"{blog_name}.blogspot.com"
+                    batch_file.start_blog(WORKER_VERSION, blog_name, blog_domain, "__i", first_blog)
+                    batch_file.end_blog()
             except NoEntries:
                 print(f"Blog has no posts: batch_id: {batch_id} | blog_name: {blog_name}")
                 blog_domain = f"{blog_name}.blogspot.com"
                 batch_file.start_blog(WORKER_VERSION, blog_name, blog_domain, "a", first_blog)
                 batch_file.end_blog()
-
 
     if batch_type == "list":
         # batch_size = 5
@@ -267,6 +278,8 @@ async def download_batch(worker_id, batch_id, batch_type, batch_content, random_
     await update_batch_status(worker_id, batch_id, random_key, "c" if upload_response else "f", session)
     print(f"Deleting batch file | file_path: {file_path} | status: {upload_response}")
     os.remove(file_path)
+
+    return True
 
 async def retry_request_on_fail(func, fail_func, check_text, check_batch_fail=False, *args, **kwargs):
 
@@ -348,7 +361,7 @@ async def main():
                 while True:
                     print("Requesting new batch...")
                     batch = await get_batch(worker_id, session)
-                    # batch = {"batch_id": 99, "batch_type": "domain", "random_key": 2938, "content": "0cal", "batch_size": 250, "file_offset": 2323, "exclusion_limit": 450}
+                    # batch = {"batch_id": 99, "batch_type": "domain", "random_key": 2938, "content": "airton-sweetspot", "batch_size": 250, "file_offset": 2323, "exclusion_limit": 450}
                     print(f"Received batch: {batch}")
                     if batch:
                         batch_id = batch["batch_id"]
@@ -359,21 +372,21 @@ async def main():
                         offset = int(batch["file_offset"])
                         exclusion_limit = int(batch["exclusion_limit"])
 
-                        for i in range(5):
+                        batch_result = None
+
+                        for i in range(3):
                             try:
-                                await download_batch(worker_id, batch_id, batch_type, batch_content, random_key, batch_size, offset, domains, exclusion_limit, session)
+                                batch_result = await download_batch(worker_id, batch_id, batch_type, batch_content, random_key, batch_size, offset, domains, exclusion_limit, session)
                                 break
-                            except (
-                                asyncio.TimeoutError, 
-                                aiohttp.client_exceptions.ServerDisconnectedError, 
-                                aiohttp.client_exceptions.ClientOSError,
-                                aiohttp.client_exceptions.ClientConnectorError
-                            ):
-                                print(f"Retrying downloading of batch in 10 seconds: batch_id: {batch_id}")
+                            except Exception as e:
+                                print(f"Error: {e}\nRetrying downloading of batch in 10 seconds: batch_id: {batch_id}")
                                 await asyncio.sleep(10)
 
+                        if not batch_result:
+                            print(f"Unable to download batch | batch_id: {batch_id}, requesting new batch in 10 seconds")
+
                     else:
-                        print("Unable to get batch")
+                        print("Unable to get batch, requesting new batch in 10 seconds")
 
                     await asyncio.sleep(10)
 
