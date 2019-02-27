@@ -208,40 +208,42 @@ async def main():
 
 
 	# logging.basicConfig(format="%(message)s", level=logging.INFO)
+	# 
+	async with aiohttp.ClientSession() as session:
 
-	# blog = "https://googleblog.blogspot.com"
-	# blog_posts = get_blog_posts(blog)
+		blog = "https://africanidol.blogspot.com"
+		blog_posts = await get_blog_posts(blog, 450, session)
 
 	# Use a file of post urls for faster debugging
-	with open("../test_data/googleblog_posts.json", "r") as file:
-		with open("../test_data/blogger_googleblog.json", "r") as file2:
+	# with open("../test_data/googleblog_posts.json", "r") as file:
+	# 	with open("../test_data/blogger_googleblog.json", "r") as file2:
 
-			batch_file = BatchFile("../output/", 120312)
-			
-			# blog_posts = json.loads(file2.read())
-			blog_posts_2 = json.loads(file.read())
-			
-			# blog_posts = ["https://0879181778.blogspot.com/2013/11/20.html"]
+		batch_file = BatchFile("../output/", 120312)
+		
+		# blog_posts = json.loads(file2.read())
+		# blog_posts_2 = json.loads(file.read())
+		
+		# blog_posts = ["https://0879181778.blogspot.com/2013/11/20.html"]
 
-			batch_file.start_blog(1, "googleblog", "googleblog.blogspot.com", "a", True)
-			await download_blog(blog_posts_2, batch_file, __exclude_limit=450)
-			batch_file.end_blog()
+		batch_file.start_blog(1, "googleblog", "googleblog.blogspot.com", "a", True)
+		await download_blog(blog_posts, batch_file, __exclude_limit=450)
+		batch_file.end_blog()
 
-			# batch_file.start_blog(1, "clean", "clean.blogspot.com", "a", False)
-			# await download_blog(blog_posts_2, batch_file, __exclude_limit=450, __starting_post=3300)
-			# batch_file.end_blog()
+		# batch_file.start_blog(1, "clean", "clean.blogspot.com", "a", False)
+		# await download_blog(blog_posts_2, batch_file, __exclude_limit=450, __starting_post=3300)
+		# batch_file.end_blog()
 
-			batch_file.end_batch()
+		batch_file.end_batch()
 
-			# batch_file_2 = BatchFile("../output/", 384753)
-			# blog_posts_2 = json.loads(file.read())
+		# batch_file_2 = BatchFile("../output/", 384753)
+		# blog_posts_2 = json.loads(file.read())
 
-			# batch_file_2.start_blog(1, "buzz", "buzz.blogspot.com", "a", True)
-			# await download_blog(blog_posts_2, batch_file_2, __starting_post=3300)
-			# batch_file_2.end_blog()
-			# batch_file_2.end_batch()
+		# batch_file_2.start_blog(1, "buzz", "buzz.blogspot.com", "a", True)
+		# await download_blog(blog_posts_2, batch_file_2, __starting_post=3300)
+		# batch_file_2.end_blog()
+		# batch_file_2.end_batch()
 
-			await session.close()
+		await session.close()
 
 
 
