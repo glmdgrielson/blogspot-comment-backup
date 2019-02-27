@@ -316,7 +316,7 @@ async def retry_request_on_fail(func, fail_func, check_text, check_batch_fail=Fa
             elif check_text:
                 text = await(response.text())
                 print(f"Server response: {text}")
-                if text != "Fail" or text == "Dupe" and response.status == 200:
+                if (text != "Fail" or text == "Dupe") and response.status == 200:
                     # print("Success!")
                     return response
                 else:
