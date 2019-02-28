@@ -28,7 +28,7 @@ class BatchFile:
 			self.blog_started = True
 			self.blog_started_status = status
 			blog_header_obj = {
-				"version": 1,
+				"version": version,
 				"fetch_date": round(time.time()),
 				"blog_name": blog_name,
 				"domain": domain,
