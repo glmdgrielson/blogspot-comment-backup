@@ -16,6 +16,7 @@ from batch_file import BatchFile
 # sharing state between downloaders is just too hard without global variables
 # they will have to do for now
 
+
 class PostsDownloader:
 
 	log_cooldown = 0
@@ -83,7 +84,7 @@ class PostsDownloader:
 						self.print_downloader_status(name)
 					await self.download_post(name, url)
 					worker_posts_downloaded += 1
-				except json.decoder.JSONDecodeError as e:
+				except (json.decoder.JSONDecodeError,ValueError) as e:
 					try:
 						print(f"{name} | Pause reason: {traceback.format_exc()}")
 						print(f"{name} | Paused due to rate limit")
@@ -109,7 +110,7 @@ class PostsDownloader:
 				if not self.restarting_session and self.downloaders_should_pause and self.downloaders_paused >= (self.downloader_count - self.downloaders_finished):
 					self.restarting_session = True
 					# sleep for a bit so we don't resume right after hitting the captcha page
-					await asyncio.sleep(10)
+					await asyncio.sleep(1)
 					print("All downloaders paused, restarting session")
 					self.print_downloader_status(name)
 					await self.session.close()
