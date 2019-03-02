@@ -7,6 +7,8 @@ from util import remove_xssi_guard, get_url_path
 from replies import get_replies_from_comment_id
 from plus_ones import get_plus_ones_from_id
 
+import time
+
 blogger_object_pattern = re.compile(r'data:(\["os\.blogger",[\s\S]*?)}\);</script>')
 
 def extract_blogger_object_from_html(html):
@@ -89,7 +91,21 @@ async def fetch_initial_page(post_url, session):
     params = {"first_party_property": "BLOGGER", "query": post_url}
     async with session.get("https://apis.google.com/u/0/_/widget/render/comments", params=params) as response:
         text = await response.text()
-        return (text, response.status)
+        return (text, response.status,response.request_info.url)
+
+async def fetch_initial_page_retry(post_url, session):
+    tries=0
+    max_tries=10
+    # retry the fetch at most max_tries if we get 404
+    while True:
+        tries += 1
+        fetch_response = await fetch_initial_page(post_url, session)
+        if (tries>1):
+            print(f"fetch_response[1] {fetch_response[1]} try {tries} url {post_url}")
+        if (tries>4):
+            time.sleep(0.1)
+        if fetch_response[1]!=404 or tries>max_tries:
+            return fetch_response
 
 async def fetch_more_comments(continuation_key, post_url, session):
     data = {"f.req": f'[[null,[[null,null,null,null,2]],[1,[20,\"{continuation_key}\"],null,[[[2,[null,\"\"]]]],true],[100]],[[\"{post_url}\",null,null,null,0,null,\"{post_url}\",null,null,1,[20,null,null,1,null,null,null,1,null,\"fntn\",0,9,0,[\"{post_url}\"],null,null,0],null,null,null,null,1,null,null,null,null,0,null,null,3,1,\"ADSJ_i2qch7-NelDrYpMAgUEL3IyfvpRaOpIlNdE_bvIQ75NJOZBrBOcjySzgO6TLTwV505qclfGXYIJhMfE5caBt_gnFo0oJQMYepGtofNznk9sXjdUpWpbuvR9fVGZg5UE5s63b2jaYidM-u0YJobnkro9YS07tqwxEfgTeBOKzWrTTOVchhsesdkGf_5Bt2nIVwQX-CBt0dMjHSlQOVRDK8lDWMDDmByx31C9iLDhEhuG6dr0IdYCDriTB8orFKbx4AJztSfIqaJgpDhjauRnxyGTfIeDCF615Dhc5oQRNWv5DC3lk0Tdz76D42zH768dAYF1_pyJLZX8CdvH9V2MlBc6bvnCJdZWmHaWi1U17imK\",20,null,null,[null,null,0,0,0],1,0,null,0],\"{post_url}\",\"{post_url}\",[20,null,null,1,null,null,null,1,null,\"fntn\",0,9,0,[\"{post_url}\"],null,null,0],0,\"\"]]'}
@@ -168,8 +184,11 @@ async def get_comments_from_post(post_url, session, get_all_pages=True, get_repl
     page = 1
     logging.info(f"- Getting comments for: {post_url}")
 
-    fetch_response = await fetch_initial_page(post_url, session)
+    fetch_response = await fetch_initial_page_retry(post_url, session)
     logging.info(f"  Received HTML | status: {fetch_response[1]}")
+
+    if (fetch_response[1]==404):
+        raise  ValueError('Restart session please')
 
     blogger_object = extract_blogger_object_from_html(fetch_response[0])
     comments = get_comments_from_blogger_object(blogger_object)
