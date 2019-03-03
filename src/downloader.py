@@ -44,7 +44,7 @@ class PostsDownloader:
 
 		self.restarting_session = False
 
-		self.session_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:65.0) Gecko/20100101 Firefox/65.0"}
+		self.session_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3626.121 Safari/537.36"}
 		self.session_timeout = aiohttp.ClientTimeout(total=20)
 		self.session_connector = aiohttp.TCPConnector(limit=30)
 		self.session = aiohttp.ClientSession(connector=self.session_connector, headers=self.session_headers, timeout=self.session_timeout, connector_owner=False)
