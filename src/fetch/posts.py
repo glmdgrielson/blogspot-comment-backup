@@ -13,22 +13,34 @@ async def get_blog_posts(blog, exclusion_limit, session):
     # Results in much faster requests
     session_get = session.get # A minor speed optimization trick
     # Initialize variables for the while loop
-    i = 0
+    posts_index = 0
     post_urls = []
     post_urls_extend = post_urls.extend
     complete = False
     while not complete:
-        index = (i * 150) + 1
+        index = (posts_index * 150) + 1
 
         if exclusion_limit and index > exclusion_limit:
             raise MarkExclusion(f"Blog has greater than {exclusion_limit} posts")
 
         #Can only get 150 blog posts returned even if a higher number is specified
         url = blog + '/feeds/posts/default?max-results=150&alt=json&start-index=' + str(index)
-        print("Getting posts from feed: " + url)
-        request_info = await session_get(url)
+        request_info = None
+        for dl_try in range(3):
+            try:
+                print(f"try {dl_try + 1} | Getting posts from feed: " + url)
+                request_info = await session_get(url)
+                if request_info.status == 200:
+                    break
+                else:
+                    await asyncio.sleep(2)
+            except:
+                await asyncio.sleep(2)
+
         # Check if the blog exists and is accessible
-        if request_info.status == 404: # Blog does not exist
+        if not request_info:
+            return "nf"
+        elif request_info.status == 404: # Blog does not exist
             return "nf" # Blog not found
         elif request_info.status == 401: # Blog is private. Note: Blogs with content warnings do not seem to be blocked by these requests, so this error will *not* appear for those.
             return "pr" # Private blog
@@ -38,14 +50,11 @@ async def get_blog_posts(blog, exclusion_limit, session):
             text = await request_info.text()
 
             feed_json = None
-
-            for _ in range(5):
-                try:
-                    feed_json = json_loads(text)
-                    break
-                except json.decoder.JSONDecodeError:
-                    print(f"Unable to load posts as JSON for: {blog}, retrying in 10 seconds")
-                    await asyncio.sleep(10)
+            try:
+                feed_json = json_loads(text)
+            except json.decoder.JSONDecodeError:
+                print(f"Unable to load posts as JSON for: {blog}, marking as exclusion")
+                raise MarkExclusion("Unable to load response as JSON")
 
             if feed_json:
                 if "feed" in feed_json and "entry" in feed_json["feed"]:
@@ -53,10 +62,10 @@ async def get_blog_posts(blog, exclusion_limit, session):
                     if len(feed_json['feed']['entry']) != 150:
                         complete = True
                     else:
-                        i += 1
-                elif i == 0:
+                        posts_index += 1
+                elif posts_index == 0:
                     raise NoEntries
-                elif i > 0:
+                elif posts_index > 0:
                     break
             else:
                 raise MarkExclusion("Unable to load response as JSON")
@@ -69,9 +78,12 @@ async def test():
         # A trailing slash on the URL seems to work OK, even if it processes with a double slash
         # blog = 'https://blogger.googleblog.com/'#'https://blogger.googleblog.com'#'https://mytriptoamerica.blogspot.com'
         # blog = "https://buzz.blogspot.com/"
-        blog = "https://airton-sweetspot.blogspot.com"
+        # blog = "https://downwindfaster.blogspot.com"
+        # blog = "https://jopik.com"
+        # blog = "https://audiotranscriptionusa.blogspot.com"
+        # blog = "https://doituyenbongdaanh.blogspot.com"
 
-        post_urls = await get_blog_posts(blog, 0, session) #Retrieve the sample blog's articles
+        post_urls = await get_blog_posts(blog, 0, session) # Retrieve the sample blog's articles
         print(f"Found {len(post_urls)} post links")
         print(json.dumps(post_urls))
 
