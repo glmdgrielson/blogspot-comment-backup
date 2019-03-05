@@ -22,12 +22,13 @@ class BatchFile:
 		self.batch_file.close()
 
 	# status: a for available, p for private, d for deleted, e for excluded
+	# __i for single domain investigate
 	def start_blog(self, version, blog_name, domain, status, first_blog):
 		if not self.blog_started:
 			self.blog_started = True
 			self.blog_started_status = status
 			blog_header_obj = {
-				"version": 1,
+				"version": version,
 				"fetch_date": round(time.time()),
 				"blog_name": blog_name,
 				"domain": domain,
