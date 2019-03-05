@@ -1,4 +1,4 @@
-import json, asyncio, aiohttp, logging
+import json, asyncio, aiohttp, logging, traceback
 from time import perf_counter
 
 import sys
@@ -11,52 +11,123 @@ from fetch.util import get_url_path
 
 from batch_file import BatchFile
 
-import string, random
+# import string, random
 
 # sharing state between downloaders is just too hard without global variables
 # they will have to do for now
 
-blog_posts = []
 
-starting_post = 0
-time_start = 0
+class PostsDownloader:
 
-posts_finished = 0
+	log_cooldown = 0
 
-downloader_count = 20
-downloaders_finished = 0
+	def __init__(self, blog_posts, batch_file, exclude_limit, starting_post=0, downloader_count=10, graceful_killer=None):
+		self.blog_posts = blog_posts
+		self.batch_file = batch_file
 
-downloaders_should_pause = False
-downloaders_paused = 0
-downloader_tasks = []
+		if graceful_killer:
+			self.graceful_killer = graceful_killer
 
-session_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:65.0) Gecko/20100101 Firefox/65.0"}
-session_timeout = aiohttp.ClientTimeout(total=20)
-session = None
-chars = string.ascii_letters + string.digits
+		self.exclude_limit = exclude_limit
+		self.starting_post = starting_post
+		self.downloader_count = downloader_count
 
-async def downloader(name, batch_file, queue):
+		self.time_start = perf_counter()
 
-	global downloaders_should_pause
-	global downloaders_paused
-	global session
-	global session_headers
-	global downloaders_finished
+		self.posts_finished = 0
+		# self.chars = string.ascii_letters + string.digits
 
-	worker_posts_downloaded = 0
-	worker_posts_requeued = 0
+		self.downloaders_finished = 0
+		self.downloaders_should_pause = False
+		self.downloaders_paused = 0
+		self.downloader_tasks = []
 
-	async def download_post(url):
-		global starting_post
-		global posts_finished
-		global time_start
-		global session
-		global chars
+		self.restarting_session = False
+
+		self.session_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3626.121 Safari/537.36"}
+		self.session_timeout = aiohttp.ClientTimeout(total=20)
+		self.session_connector = aiohttp.TCPConnector(limit=30)
+		self.session = aiohttp.ClientSession(connector=self.session_connector, headers=self.session_headers, timeout=self.session_timeout, connector_owner=False)
+
+		self.queue = []
+		for post in self.blog_posts[self.starting_post:]:
+			self.queue.append(post)
+
+		for i in range(self.downloader_count):
+			prefix = "0" if i < 10 else ""
+			downloader_task = asyncio.create_task(self.downloader(f"downloader-{prefix}{i}", self.batch_file, self.queue))
+			self.downloader_tasks.append(downloader_task)
+
+
+	async def start(self):
+		t0 = perf_counter()
+		await asyncio.gather(*self.downloader_tasks)
+		duration = perf_counter() - t0
+		print("Saved %s posts in %s seconds" % (self.posts_finished, format(duration, '.2f')))
+		await self.session.close()
+		await self.session_connector.close()
+
+	async def downloader(self, name, batch_file, queue):
+
+		worker_posts_downloaded = 0
+
+		paused = False
+
+		while len(queue) > 0:
+			if not self.downloaders_should_pause and (self.starting_post + self.posts_finished < len(self.blog_posts)):
+				url = queue.pop()
+				try:
+					if paused:
+						paused = False
+						self.downloaders_paused -= 1
+						print(f"{name} | Resuming from rate limit pause")
+						self.print_downloader_status(name)
+					await self.download_post(name, url)
+					worker_posts_downloaded += 1
+				except (json.decoder.JSONDecodeError,ValueError) as e:
+					try:
+						print(f"{name} | Pause reason: {traceback.format_exc()}")
+						print(f"{name} | Paused due to rate limit")
+						self.print_downloader_status(name)
+						if not self.downloaders_should_pause:
+							self.downloaders_should_pause = True
+						# Add the url back to the queue for another task do pick up
+						self.requeue_url(name, url)
+					except Exception as e:
+						exit(e)
+				except Exception as e:
+					exit(e)
+
+			else:
+				await asyncio.sleep(5)
+				if not paused:
+					paused = True
+					self.downloaders_paused += 1
+				else:
+					print(f"{name} | Waiting for all downloaders to pause")
+					self.print_downloader_status(name)
+
+				if not self.restarting_session and self.downloaders_should_pause and self.downloaders_paused >= (self.downloader_count - self.downloaders_finished):
+					self.restarting_session = True
+					# sleep for a bit so we don't resume right after hitting the captcha page
+					await asyncio.sleep(1)
+					print("All downloaders paused, restarting session")
+					self.print_downloader_status(name)
+					await self.session.close()
+					self.session = aiohttp.ClientSession(connector=self.session_connector, headers=self.session_headers, timeout=self.session_timeout, connector_owner=False)
+					self.downloaders_should_pause = False
+					self.restarting_session = False
+
+		self.downloaders_finished += 1
+		print(f"{name} DONE | Posts Downloaded: {worker_posts_downloaded}")
+		self.print_downloader_status(name)
+
+	async def download_post(self, name, url):
 		try:
-			comments = await get_comments_from_post(url, session, get_all_pages=True, get_replies=True, get_comment_plus_ones=True, get_reply_plus_ones=True)
+			comments = await get_comments_from_post(url, self.session, get_all_pages=True, get_replies=True, get_comment_plus_ones=True, get_reply_plus_ones=True)
 
-			first_post = posts_finished == 0
-			batch_file.add_blog_post(url, comments, first_post)
+			first_post = self.posts_finished == 0
+			self.batch_file.add_blog_post(url, comments, first_post)
 
 			# include a random string to prevent file name collisions
 			# random_chars = "".join(random.choices(chars, k=7))
@@ -64,150 +135,76 @@ async def downloader(name, batch_file, queue):
 			# with open(file_path, "w") as file:
 			# 	file.write(json.dumps({"url": url, "comments": comments}))
 
-			total_time = perf_counter() - time_start
-			print_downloader_progress(name, starting_post, posts_finished, blog_posts, total_time)
-			print_downloader_status(name, downloaders_paused, downloaders_finished)
-			posts_finished += 1
-		except (asyncio.TimeoutError, TypeError, aiohttp.client_exceptions.ClientOSError):
-			print(f"{name} | Request timed out")
-			requeue_url(name, url, worker_posts_requeued)
+			total_time = perf_counter() - self.time_start
+			if PostsDownloader.log_cooldown >= 20 or self.downloaders_should_pause or self.restarting_session:
+				self.print_downloader_progress(name, total_time)
+				self.print_downloader_status(name)
+				PostsDownloader.log_cooldown = 0
+			else:
+				PostsDownloader.log_cooldown += 1
+			self.posts_finished += 1
+		except (
+				asyncio.TimeoutError, 
+				aiohttp.client_exceptions.ServerDisconnectedError, 
+				aiohttp.client_exceptions.ClientOSError,
+				aiohttp.client_exceptions.ClientConnectorError,
+				TypeError
+			) as e:
+
+			print(f"{name} | Retry reason: {traceback.format_exc()}")
+
+			print(f"{name} | {self.batch_file.file_name} | An error occurred during the request, requeuing post in 5 seconds")
 			await asyncio.sleep(5)
+			self.requeue_url(name, url)
 
-	def requeue_url(name, url, worker_posts_requeued):
+	def requeue_url(self, name, url):
 		print(f"{name} | Requeuing post: \'{get_url_path(url)}\'")
-		queue.append(url)
-		worker_posts_requeued += 1
+		self.queue.append(url)
 
-	def print_downloader_progress(name, starting_post, posts_finished, blog_posts, total_time):
-		print(f"{name} | [PROGRESS] Post {starting_post + posts_finished + 1}/{len(blog_posts)} | Total time running: {format(total_time, '.2f')}s")
+	def print_downloader_progress(self, name, total_time):
+		print(f"{name} | [PROGRESS] {self.batch_file.file_name} | Post {self.starting_post + self.posts_finished + 1}/{len(self.blog_posts)} | Total time running: {format(total_time, '.2f')}s")
 
-	def print_downloader_status(name, downloaders_paused, downloaders_finished):
-		print(f"{name} | downloaders_paused: {downloaders_paused} downloaders_finished: {downloaders_finished}\n")
-
-	paused = False
-
-	while len(queue) > 0:
-		if not downloaders_should_pause and (starting_post + posts_finished < len(blog_posts)):
-			url = queue.pop()
-			try:
-				if paused:
-					paused = False
-					downloaders_paused -= 1
-					print(f"{name} | Resuming from rate limit pause")
-					print_downloader_status(name, downloaders_paused, downloaders_finished)
-				await download_post(url)
-				worker_posts_downloaded += 1
-			except json.decoder.JSONDecodeError as e:
-				try:
-					print(f"{name} | Paused due to rate limit")
-					print_downloader_status(name, downloaders_paused, downloaders_finished)
-					downloaders_should_pause = True
-					# Add the url back to the queue for another task do pick up
-					requeue_url(name, url, worker_posts_requeued)
-				except Exception as e:
-					exit(e)
-			except Exception as e:
-				exit(e)
-
-		else:
-			await asyncio.sleep(2)
-			if not paused:
-				paused = True
-				downloaders_paused += 1
-
-				if downloaders_paused == downloader_count - downloaders_finished:
-					# sleep for a bit so we don't resume right after hitting the captcha page
-					await asyncio.sleep(10)
-					print("All downloaders paused, restarting session")
-					print_downloader_status(name, downloaders_paused, downloaders_finished)
-					await session.close()
-					session = aiohttp.ClientSession(headers=session_headers, timeout=session_timeout)
-					downloaders_should_pause = False
-
-	downloaders_finished += 1
-	print(f"{name} DONE | Posts Downloaded: {worker_posts_downloaded} | Posts Requeued: {worker_posts_requeued}")
-	print_downloader_status(name, downloaders_paused, downloaders_finished)
-
-async def download_blog(__blog_posts, __batch_file, __exclude_limit, __starting_post=0, __downloader_count=10):
-	global starting_post
-	global posts_finished
-	global time_start
-	global session
-	global session_headers
-	global downloader_count
-	global downloader_tasks
-	global downloaders_finished
-	global blog_posts
-
-	starting_post = __starting_post
-	downloader_count = __downloader_count
-
-	time_start = perf_counter()
-
-	blog_posts = __blog_posts
-
-	posts_finished = 0
-	downloaders_finished = 0
-	downloaders_should_pause = False
-	downloaders_paused = 0
-	downloader_tasks = []
-
-	if not session:
-		session = aiohttp.ClientSession(headers=session_headers, timeout=session_timeout)
-
-	queue = []
-	for post in blog_posts[starting_post:]:
-		queue.append(post)
-
-	for i in range(downloader_count):
-		prefix = "0" if i < 10 else ""
-		downloader_task = asyncio.create_task(downloader(f"downloader-{prefix}{i}", __batch_file, queue))
-		downloader_tasks.append(downloader_task)
-
-	t0 = perf_counter()
-	# await posts_queue.join()
-	await asyncio.gather(*downloader_tasks)
-	duration = perf_counter() - t0
-	print("Saved %s posts in %s seconds" % (posts_finished, format(duration, '.2f')))
+	def print_downloader_status(self, name):
+		print(f"{name} | downloaders_paused: {self.downloaders_paused} downloaders_finished: {self.downloaders_finished}\n")
 
 
 async def main():
-	global session
-
 
 	# logging.basicConfig(format="%(message)s", level=logging.INFO)
+	# 
+	# async with aiohttp.ClientSession() as session:
 
-	# blog = "https://googleblog.blogspot.com"
-	# blog_posts = get_blog_posts(blog)
+		# blog = "https://dev.blogspot.com"
+		# blog_posts = await get_blog_posts(blog, 450, session)
 
 	# Use a file of post urls for faster debugging
 	with open("../test_data/googleblog_posts.json", "r") as file:
-		with open("../test_data/blogger_googleblog.json", "r") as file2:
+		# with open("../test_data/blogger_googleblog.json", "r") as file2:
 
-			batch_file = BatchFile("../output/", 120312)
-			
-			blog_posts = json.loads(file2.read())
-			blog_posts_2 = json.loads(file.read())
+		batch_file = BatchFile("../output/", 120312)
+		
+		blog_posts = json.loads(file.read())
+		print(blog_posts)
+		# blog_posts_2 = json.loads(file.read())
 
-			batch_file.start_blog(1, "googleblog", "googleblog.blogspot.com", "a", True)
-			await download_blog(blog_posts, batch_file, __exclude_limit=450, __starting_post=500)
-			batch_file.end_blog()
+		batch_file.start_blog(1, "googleblog", "googleblog.blogspot.com", "a", True)
+		dl = PostsDownloader(blog_posts, batch_file, 450)
+		await dl.start()
+		batch_file.end_blog()
 
-			batch_file.start_blog(1, "clean", "clean.blogspot.com", "a", False)
-			await download_blog(blog_posts_2, batch_file, __exclude_limit=450, __starting_post=3300)
-			batch_file.end_blog()
+		# batch_file.start_blog(1, "clean", "clean.blogspot.com", "a", False)
+		# await download_blog(blog_posts_2, batch_file, __exclude_limit=450, __starting_post=3300)
+		# batch_file.end_blog()
 
-			batch_file.end_batch()
+		batch_file.end_batch()
 
-			# batch_file_2 = BatchFile("../output/", 384753)
-			# blog_posts_2 = json.loads(file.read())
+		# batch_file_2 = BatchFile("../output/", 384753)
+		# blog_posts_2 = json.loads(file.read())
 
-			# batch_file_2.start_blog(1, "buzz", "buzz.blogspot.com", "a", True)
-			# await download_blog(blog_posts_2, batch_file_2, __starting_post=3300)
-			# batch_file_2.end_blog()
-			# batch_file_2.end_batch()
-
-			await session.close()
+		# batch_file_2.start_blog(1, "buzz", "buzz.blogspot.com", "a", True)
+		# await download_blog(blog_posts_2, batch_file_2, __starting_post=3300)
+		# batch_file_2.end_blog()
+		# batch_file_2.end_batch()
 
 
 
